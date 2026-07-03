@@ -2,9 +2,9 @@
 # Run this in an interactive job:
 : << 'EOF'
 salloc \
---time=0-00:05:00 \
---cpus-per-task=1 \
---mem=2G \
+--time=0-02:00:00 \
+--cpus-per-task=8 \
+--mem=16G \
 --ntasks=1 \
 --mail-user=christopher.indris@torontomu.ca \
 --mail-type=ALL
