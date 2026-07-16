@@ -1,2 +1,5 @@
 # large files
 rxr_train_guide.jsonl
+
+# LLM
+.agents/
