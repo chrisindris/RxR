@@ -3,3 +3,6 @@ rxr_train_guide.jsonl
 
 # LLM
 .agents/
+
+# Python
+*__pycache__

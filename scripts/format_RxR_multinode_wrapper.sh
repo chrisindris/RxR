@@ -2,7 +2,7 @@
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
-#SBATCH --time=0-02:00:00
+#SBATCH --time=0-01:00:00
 #SBATCH --mem=0
 #SBATCH --output=out/%N-format_RxR_multinode-%j.out
 #SBATCH --mail-user=christopher.indris@torontomu.ca
@@ -30,6 +30,7 @@ echo "Detected cluster: $CLUSTER"
 
 INPUT_TAR_GZ="/scratch/indrisch/RxR.tar.gz"
 INPUT_DATASET_DIR="/scratch/indrisch/RxR_data/"
+RXR_SHARDING_MODE="${RXR_SHARDING_MODE:-node}"
 
 if [[ -d "${INPUT_DATASET_DIR}" ]]; then
 	MODE="--input-dataset-dir"
@@ -51,7 +52,8 @@ srun \
 	--cpus-per-task="${SLURM_CPUS_PER_TASK:-16}" \
 	env SPAR7M_SKIP_FINAL_PACKAGING=0 \
 	${BASE_PATH}/format_RxR_multinode.sh \
-	${MODE} "${INPUT}"
+	${MODE} "${INPUT}" \
+	--sharding-mode "${RXR_SHARDING_MODE}"
 
 FINAL_DATASET_DIR="/scratch/indrisch/RxR_data_combined_h5_multinode"
 FINAL_DATASET_TAR_GZ="/scratch/indrisch/RxR_data_combined_h5_multinode.tar.gz"

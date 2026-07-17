@@ -27,6 +27,7 @@ NODE_INDEX="${SLURM_PROCID:-0}"
 INPUT_TAR_GZ=""
 INPUT_DATASET_DIR=""
 FINAL_DATASET_DIR="/scratch/indrisch/RxR_data_combined_h5_multinode"
+SHARDING_MODE="node"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -40,6 +41,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --final-dataset-dir)
             FINAL_DATASET_DIR="$2"
+            shift 2
+            ;;
+        --sharding-mode)
+            SHARDING_MODE="$2"
             shift 2
             ;;
         *)
@@ -63,29 +68,39 @@ fi
 SYSCONFIG_DIR_PATH="$PROJECT_DIR/scripts"
 export PYTHONPATH="$PYTHONPATH:$SYSCONFIG_DIR_PATH"
 
-# Load modules
+# Load modules strictly before virtualenv activation
 module load StdEnv/2023 gcc/12.3 openmpi/4.1.5
 module load python/3.12 cuda/12.6 opencv/4.12.0
 module load arrow
 
 if [[ "$CLUSTER" == "TRILLIUM" ]]; then
     export VENV_RXR="/home/indrisch/venv_rxr/"
+    if [[ ! -d "${VENV_RXR}" ]]; then
+        virtualenv --no-download "${VENV_RXR}"
+    fi
     source ${VENV_RXR}/bin/activate
+    pip install --no-index --upgrade pip setuptools wheel || true
+    pip install --no-index numpy torch pyarrow h5py opencv-python huggingface_hub tqdm pillow || true
 else
     if [[ -z "$SLURM_TMPDIR" ]]; then
         export VENV_RXR="/scratch/indrisch/venv_rxr/" 
+        if [[ ! -d "${VENV_RXR}" ]]; then
+            virtualenv --no-download "${VENV_RXR}"
+        fi
         source ${VENV_RXR}/bin/activate
+        pip install --no-index --upgrade pip setuptools wheel || true
+        pip install --no-index numpy torch pyarrow h5py opencv-python huggingface_hub tqdm pillow || true
     else
         export VENV_RXR="${SLURM_TMPDIR}/venv_rxr/" 
         virtualenv --no-download ${VENV_RXR}
         source ${VENV_RXR}/bin/activate
         pip install --no-index --upgrade pip setuptools wheel
-        pip install --no-index numpy torch pyarrow h5py opencv-python huggingface_hub tqdm
+        pip install --no-index numpy torch pyarrow h5py opencv-python huggingface_hub tqdm pillow
     fi
 fi
 echo "Venv path: ${VENV_RXR}"
 
-# ---===--- 2. Extract and assign ZIP files ---===---
+# ---===--- 2. Extract or Assign Dataset Paths ---===---
 
 if [[ -z "$SLURM_TMPDIR" ]]; then
     export WORKDIR="/scratch/indrisch/RxR_workdir/node_${NODE_INDEX}/"
@@ -98,59 +113,64 @@ mkdir -p "${WORKDIR}"
 mkdir -p "${COMBINED_DATASET_DIR}"
 echo "WORKDIR: ${WORKDIR}"
 
-# Do not copy the large tarball to SLURM_TMPDIR. Read directly from the source.
-TAR_GZ_LOCAL="${INPUT_TAR_GZ}"
-
-echo "Listing contents of ${TAR_GZ_LOCAL} to find zip/7z files..."
-# Find all zip/7z files directly from the tarball; however, if we have a file available that simply lists them, use that.
-if [[ -f "/project/def-wangcs/indrisch/RxR/secrets/RxR_tar_gz_contents.txt" ]]; then
-    ZIP_FILES=($(tail -n +2 "/project/def-wangcs/indrisch/RxR/secrets/RxR_tar_gz_contents.txt" | sort))
-else 
-    ZIP_FILES=($(tar -tf "${TAR_GZ_LOCAL}" | grep -iE '\.(zip|7z)$' | sort))
-fi
-
-# Assign to current node
-ASSIGNED_ZIPS=()
-for i in "${!ZIP_FILES[@]}"; do
-    if (( i % NODE_COUNT == NODE_INDEX )); then
-        ASSIGNED_ZIPS+=("${ZIP_FILES[$i]}")
+if [[ -n "${INPUT_DATASET_DIR}" && -d "${INPUT_DATASET_DIR}" ]]; then
+    echo "Using existing dataset directory: ${INPUT_DATASET_DIR}"
+    EXTRACT_ROOT="${INPUT_DATASET_DIR}"
+elif [[ -n "${INPUT_TAR_GZ}" && -f "${INPUT_TAR_GZ}" ]]; then
+    TAR_GZ_LOCAL="${INPUT_TAR_GZ}"
+    echo "Listing contents of ${TAR_GZ_LOCAL} to find zip/7z files..."
+    if [[ -f "/project/def-wangcs/indrisch/RxR/secrets/RxR_tar_gz_contents.txt" ]]; then
+        ZIP_FILES=($(tail -n +2 "/project/def-wangcs/indrisch/RxR/secrets/RxR_tar_gz_contents.txt" | sort))
+    else 
+        ZIP_FILES=($(tar -tf "${TAR_GZ_LOCAL}" | grep -iE '\.(zip|7z)$' | sort))
     fi
-done
 
-echo "Node $NODE_INDEX assigned ${#ASSIGNED_ZIPS[@]} zip files out of ${#ZIP_FILES[@]} total."
+    # Assign to current node
+    ASSIGNED_ZIPS=()
+    for i in "${!ZIP_FILES[@]}"; do
+        if (( i % NODE_COUNT == NODE_INDEX )); then
+            ASSIGNED_ZIPS+=("${ZIP_FILES[$i]}")
+        fi
+    done
 
-echo "Extracting assigned files from ${TAR_GZ_LOCAL} to ${WORKDIR}/zips"
-mkdir -p "${WORKDIR}/zips"
-if [ ${#ASSIGNED_ZIPS[@]} -gt 0 ]; then
-    tar -xf "${TAR_GZ_LOCAL}" -C "${WORKDIR}/zips" "${ASSIGNED_ZIPS[@]}"
-fi
+    echo "Node $NODE_INDEX assigned ${#ASSIGNED_ZIPS[@]} zip files out of ${#ZIP_FILES[@]} total."
 
-EXTRACT_ROOT="${WORKDIR}/extracted"
-mkdir -p "${EXTRACT_ROOT}"
-
-# Find all zip/7z files that were just extracted
-shopt -s nullglob
-EXTRACTED_ZIPS=($(find "${WORKDIR}/zips" -type f \( -name "*.zip" -o -name "*.7z" \) | sort))
-
-# Extract assigned zip/7z files
-for zf in "${EXTRACTED_ZIPS[@]}"; do
-    echo "Extracting $zf..."
-    if [[ -f ~/7zz ]]; then
-        ~/7zz x "$zf" -o"${EXTRACT_ROOT}" -y >/dev/null
-        rm -f "$zf"
-    else
-        echo "Error: ~/7zz not found. Please install 7-zip."
-        exit 1
+    echo "Extracting assigned files from ${TAR_GZ_LOCAL} to ${WORKDIR}/zips"
+    mkdir -p "${WORKDIR}/zips"
+    if [ ${#ASSIGNED_ZIPS[@]} -gt 0 ]; then
+        tar -xf "${TAR_GZ_LOCAL}" -C "${WORKDIR}/zips" "${ASSIGNED_ZIPS[@]}"
     fi
-done
 
-echo "Extraction complete."
+    EXTRACT_ROOT="${WORKDIR}/extracted"
+    mkdir -p "${EXTRACT_ROOT}"
+
+    shopt -s nullglob
+    EXTRACTED_ZIPS=($(find "${WORKDIR}/zips" -type f \( -name "*.zip" -o -name "*.7z" \) | sort))
+
+    for zf in "${EXTRACTED_ZIPS[@]}"; do
+        echo "Extracting $zf..."
+        if [[ -f ~/7zz ]]; then
+            ~/7zz x "$zf" -o"${EXTRACT_ROOT}" -y >/dev/null
+            rm -f "$zf"
+        else
+            echo "Error: ~/7zz not found. Please install 7-zip."
+            exit 1
+        fi
+    done
+    echo "Extraction complete."
+else
+    echo "Error: Could not locate valid input from --input-dataset-dir '${INPUT_DATASET_DIR}' or --input-tar-gz '${INPUT_TAR_GZ}'."
+    exit 1
+fi
 
 # ---===--- 3. Run Python formatter ---===---
 
-python format_Structured3D_multinode.py \
+python format_RxR_multinode.py \
     --combined-dataset "${COMBINED_DATASET_DIR}" \
-    --extract-root "${EXTRACT_ROOT}"
+    --extract-root "${EXTRACT_ROOT}" \
+    --node-index "${NODE_INDEX}" \
+    --node-count "${NODE_COUNT}" \
+    --sharding-mode "${SHARDING_MODE}"
 
 # ---===--- 4. Rsync to final destination ---===---
 
