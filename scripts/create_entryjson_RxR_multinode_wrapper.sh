@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --nodes=4
+#SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=16
-#SBATCH --time=0-03:00:00
+#SBATCH --cpus-per-task=1
+#SBATCH --time=0-00:05:00
 #SBATCH --mem=0
-#SBATCH --output=out/%N-format_RxR_multinode-%j.out
+#SBATCH --output=out/%N-create_entryjson_RxR_multinode-%j.out
 #SBATCH --mail-user=christopher.indris@torontomu.ca
 #SBATCH --mail-type=ALL
 
@@ -28,16 +28,14 @@ else
 fi
 echo "Detected cluster: $CLUSTER"
 
-INPUT_TAR_GZ="/scratch/indrisch/RxR.tar.gz"
-INPUT_DATASET_DIR="/scratch/indrisch/RxR_data/"
-RXR_SHARDING_MODE="${RXR_SHARDING_MODE:-node}"
+INPUT_DATASET_DIR="/scratch/indrisch/RxR_data_combined_h5_multinode/"
 
 if [[ -d "${INPUT_DATASET_DIR}" ]]; then
-	MODE="--input-dataset-dir"
+	MODE="--input_dataset"
 	INPUT="${INPUT_DATASET_DIR}"
 else
-	MODE="--input-tar-gz"
-	INPUT="${INPUT_TAR_GZ}"
+	echo "Error: Input dataset directory does not exist: ${INPUT_DATASET_DIR}" >&2
+  exit 1
 fi
 
 if [[ "$CLUSTER" == "NARVAL" ]]; then
@@ -46,21 +44,6 @@ else
 	BASE_PATH="/scratch/indrisch/RxR/scripts/"
 fi
 
-srun \
-	--ntasks="${SLURM_NNODES:-1}" \
-	--ntasks-per-node=1 \
-	--cpus-per-task="${SLURM_CPUS_PER_TASK:-16}" \
-	env SPAR7M_SKIP_FINAL_PACKAGING=0 \
-	${BASE_PATH}/format_RxR_multinode.sh \
-	${MODE} "${INPUT}" \
-	--sharding-mode "${RXR_SHARDING_MODE}"
 
-FINAL_DATASET_DIR="/scratch/indrisch/RxR_data_combined_h5_multinode"
-FINAL_DATASET_TAR_GZ="/scratch/indrisch/RxR_data_combined_h5_multinode.tar.gz"
-if [[ -e "${FINAL_DATASET_TAR_GZ}" ]]; then
-	echo "Error: Final tar archive already exists: ${FINAL_DATASET_TAR_GZ}" >&2
-	echo "Remove or rename it before rerunning to avoid overwriting a completed run." >&2
-fi
-
-echo "file count in FINAL_DATASET_DIR: $(find "${FINAL_DATASET_DIR}" -type f | wc -l)"
-echo "disk usage of FINAL_DATASET_DIR: $(du -sh "${FINAL_DATASET_DIR}")"
+${BASE_PATH}/create_entryjson_RxR_multinode.sh \
+	${MODE} "${INPUT}"
